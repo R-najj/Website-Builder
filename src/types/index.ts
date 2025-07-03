@@ -1,3 +1,21 @@
+export type ColorValue =
+  | `#${string}`
+  | "black"
+  | "white"
+  | "red"
+  | "green"
+  | "blue"
+  | "yellow"
+  | "orange"
+  | "purple"
+  | "pink"
+  | "brown"
+  | "gray"
+  | "grey"
+  | "transparent";
+export type AlignmentValue = "left" | "center" | "right";
+export type SectionType = "hero" | "footer" | "cta";
+
 export interface SectionProps {
   id: string;
   title?: string;
@@ -5,19 +23,24 @@ export interface SectionProps {
   content?: string;
   buttonText?: string;
   buttonLink?: string;
-  backgroundColor?: string;
-  textColor?: string;
+  backgroundColor?: ColorValue;
+  textColor?: ColorValue;
   image?: string;
-  alignment?: "left" | "center" | "right";
-  [key: string]: unknown;
+  alignment?: AlignmentValue;
 }
 
 export interface Section {
   id: string;
-  type: "hero" | "footer" | "cta";
+  type: SectionType;
   props: SectionProps;
   order: number;
 }
+
+export type SectionPropsMap = {
+  hero: Partial<SectionProps>;
+  footer: Partial<SectionProps>;
+  cta: Partial<SectionProps>;
+};
 
 export interface SectionsRecord {
   [sectionId: string]: Section;
@@ -34,7 +57,10 @@ export interface CanvasSelectors {
 }
 
 export interface CanvasActions {
-  addSection: (type: Section["type"], props?: Partial<SectionProps>) => void;
+  addSection: <T extends SectionType>(
+    type: T,
+    props?: SectionPropsMap[T]
+  ) => void;
   updateSection: (id: string, props: Partial<SectionProps>) => void;
   removeSection: (id: string) => void;
   duplicateSection: (id: string) => void;
@@ -62,12 +88,12 @@ export interface CanvasStoreSelectors {
   useSection: (id: string) => Section | undefined;
 }
 
-export interface PreMadeSection {
-  type: "hero" | "footer" | "cta";
+export interface PreMadeSection<T extends SectionType = SectionType> {
+  type: T;
   name: string;
-  icon: string;
+  icon: "Zap" | "Target" | "Layout";
   description: string;
-  defaultProps: Partial<SectionProps>;
+  defaultProps: SectionPropsMap[T];
 }
 
 export type SectionUpdatePayload = {
@@ -84,21 +110,29 @@ export const ItemTypes = {
   SECTION: "section",
 };
 
-export type SectionFilter = "all" | "hero" | "footer" | "cta";
+export type ItemType = (typeof ItemTypes)[keyof typeof ItemTypes];
 
-export interface RightPanelProps {
-  isOpen: boolean;
-  onClose: () => void;
+export interface DragItem {
+  index: number;
+  id: string;
+  type: ItemType;
 }
+
+export type SectionFilter = "all" | SectionType;
 
 export type SectionFieldValues = {
   title?: string;
   subtitle?: string;
   content?: string;
   buttonText?: string;
-  backgroundColor?: string;
-  textColor?: string;
+  backgroundColor?: ColorValue;
+  textColor?: ColorValue;
 };
+
+export interface RightPanelProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
 
 export interface LeftPanelProps {
   isOpen: boolean;
@@ -119,12 +153,6 @@ export interface DraggableSectionProps {
   onClick?: () => void;
 }
 
-export interface DragItem {
-  index: number;
-  id: string;
-  type: string;
-}
-
 export interface VisualSectionProps {
   section: SectionProps;
   isSelected?: boolean;
@@ -135,4 +163,85 @@ export interface SectionRendererProps {
   section: Section;
   isSelected?: boolean;
   onClick?: () => void;
+}
+
+export interface ValidationResult<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+export interface ImportData {
+  sections: SectionsRecord;
+  sectionOrder: string[];
+}
+
+export class ValidationError extends Error {
+  constructor(message: string, public field?: string) {
+    super(message);
+    this.name = "ValidationError";
+  }
+}
+
+export class SectionNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Section with id "${id}" not found`);
+    this.name = "SectionNotFoundError";
+  }
+}
+
+export type DeepPartial<T> = {
+  [P in keyof T]?: T[P] extends object ? DeepPartial<T[P]> : T[P];
+};
+
+export type RequiredKeys<T, K extends keyof T> = T & Required<Pick<T, K>>;
+
+export function isHeroSection(section: Section): boolean {
+  return section.type === "hero";
+}
+
+export function isCTASection(section: Section): boolean {
+  return section.type === "cta";
+}
+
+export function isFooterSection(section: Section): boolean {
+  return section.type === "footer";
+}
+
+export function isValidColorValue(value: string): value is ColorValue {
+  const hexPattern = /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/;
+  const namedColors = [
+    "black",
+    "white",
+    "red",
+    "green",
+    "blue",
+    "yellow",
+    "orange",
+    "purple",
+    "pink",
+    "brown",
+    "gray",
+    "grey",
+    "transparent",
+  ];
+  return hexPattern.test(value) || namedColors.includes(value);
+}
+
+export function isValidAlignmentValue(value: string): value is AlignmentValue {
+  return ["left", "center", "right"].includes(value);
+}
+
+// Section validation helpers
+export function validateSectionRequiredFields(section: Section): boolean {
+  switch (section.type) {
+    case "hero":
+      return Boolean(section.props.title);
+    case "cta":
+      return Boolean(section.props.title && section.props.buttonText);
+    case "footer":
+      return Boolean(section.props.content);
+    default:
+      return true;
+  }
 }

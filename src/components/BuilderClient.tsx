@@ -1,54 +1,27 @@
 "use client";
 
 import { useState, useRef } from "react";
-import dynamic from "next/dynamic";
 import { DndProvider } from "react-dnd";
 import { HTML5Backend } from "react-dnd-html5-backend";
 import { saveAs } from "file-saver";
 import { Header } from "@/components/Header";
 import { Canvas } from "@/components/Canvas";
 import { ExportLoader } from "@/components/ExportLoader";
+import { LeftPanel } from "@/components/LeftPanel";
+import { RightPanel } from "@/components/RightPanel";
 import { useCanvasActions, useCanvasStore } from "@/store/canvasStore";
 import {
   validateImportData,
-  isValidJSON,
   validateFileSize,
   validateFileType,
+  safeParseJSON,
 } from "@/lib/validation";
-import { PanelContentSkeleton } from "./PanelContentSkeleton";
-
-const LeftPanelLoading = () => (
-  <div className="w-80 bg-white border-r border-gray-200 flex-col hidden xl:flex">
-    <PanelContentSkeleton />
-  </div>
-);
-
-const RightPanelLoading = () => (
-  <div className="w-80 bg-white border-l border-gray-200 flex-col hidden xl:flex">
-    <PanelContentSkeleton />
-  </div>
-);
-
-const LeftPanel = dynamic(
-  () => import("@/components/LeftPanel").then((mod) => mod.LeftPanel),
-  {
-    loading: LeftPanelLoading,
-    ssr: false,
-  }
-);
-
-const RightPanel = dynamic(
-  () => import("@/components/RightPanel").then((mod) => mod.RightPanel),
-  {
-    loading: RightPanelLoading,
-    ssr: false,
-  }
-);
 
 export default function BuilderClient() {
   const [leftPanelOpen, setLeftPanelOpen] = useState(false);
   const [rightPanelOpen, setRightPanelOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { importSections } = useCanvasActions();
@@ -74,39 +47,93 @@ export default function BuilderClient() {
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    if (!validateFileType(file)) {
-      alert("Invalid file type. Please select a JSON file.");
-      return;
-    }
-    if (!validateFileSize(file)) {
-      alert("File too large. Maximum size is 10MB.");
-      return;
-    }
+    setIsImporting(true);
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const result = e.target?.result as string;
-        if (!isValidJSON(result)) {
-          throw new Error("Invalid JSON or malicious content detected.");
-        }
-        const importedData = JSON.parse(result);
-        const validatedData = validateImportData(importedData);
-        const sectionsArray = validatedData.sectionOrder.map(
-          (id) => validatedData.sections[id]
+    try {
+      const fileTypeResult = validateFileType(file);
+      if (!fileTypeResult.success) {
+        throw new Error(
+          fileTypeResult.error ||
+            "Invalid file type. Please select a JSON file."
         );
-        importSections(sectionsArray);
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Unknown error";
-        alert(`Import failed: ${message}`);
       }
-    };
-    reader.readAsText(file);
+
+      const fileSizeResult = validateFileSize(file);
+      if (!fileSizeResult.success) {
+        throw new Error(
+          fileSizeResult.error || "File too large. Maximum size is 10MB."
+        );
+      }
+
+      const fileContent = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const result = e.target?.result as string;
+          if (result) {
+            resolve(result);
+          } else {
+            reject(new Error("Failed to read file content"));
+          }
+        };
+        reader.onerror = () => reject(new Error("Error reading file"));
+        reader.readAsText(file);
+      });
+
+      const parseResult = safeParseJSON(fileContent);
+      if (!parseResult.success || !parseResult.data) {
+        throw new Error(
+          parseResult.error ||
+            "Invalid JSON format or malicious content detected."
+        );
+      }
+
+      const validationResult = validateImportData(parseResult.data);
+      if (!validationResult.success || !validationResult.data) {
+        throw new Error(
+          validationResult.error ||
+            "Invalid import data format. Please ensure you're importing a valid website builder export file."
+        );
+      }
+
+      const validatedData = validationResult.data;
+
+      if (
+        !validatedData.sectionOrder ||
+        validatedData.sectionOrder.length === 0
+      ) {
+        throw new Error("No sections found in the import file.");
+      }
+
+      const sectionsArray = validatedData.sectionOrder
+        .map((id) => validatedData.sections[id])
+        .filter(Boolean);
+
+      if (sectionsArray.length === 0) {
+        throw new Error("No valid sections found in the import file.");
+      }
+
+      importSections(sectionsArray);
+
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Unknown error occurred during import";
+      alert(`Import failed: ${message}`);
+      console.error("Import error:", error);
+    } finally {
+      setIsImporting(false);
+    }
   };
 
   const overlayVisible = leftPanelOpen || rightPanelOpen;
@@ -114,12 +141,22 @@ export default function BuilderClient() {
   return (
     <DndProvider backend={HTML5Backend}>
       <ExportLoader active={isExporting} />
+      {isImporting && (
+        <div className="fixed inset-0 bg-gray-100 bg-opacity-75 z-50 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+            <p className="text-gray-900 text-lg font-medium">
+              Importing sections...
+            </p>
+          </div>
+        </div>
+      )}
       <input
         type="file"
         ref={fileInputRef}
         onChange={handleFileChange}
         className="hidden"
-        accept="application/json"
+        accept="application/json,.json"
       />
       <div className="flex h-screen bg-gray-50 relative">
         {overlayVisible && (

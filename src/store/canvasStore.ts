@@ -7,6 +7,8 @@ import {
   CanvasState,
   SectionsRecord,
   SectionFilter,
+  SectionType,
+  SectionPropsMap,
 } from "@/types";
 import { nanoid } from "nanoid";
 import { useMemo } from "react";
@@ -25,7 +27,10 @@ export const useCanvasStore = create<CanvasState>()(
           selectedSectionId: null,
           sectionFilter: "all" as SectionFilter,
 
-          addSection: (type, props = {}) => {
+          addSection: <T extends SectionType>(
+            type: T,
+            props: SectionPropsMap[T] = {} as SectionPropsMap[T]
+          ) => {
             const id = generateId();
             const sanitizedProps = sanitizeSectionProps(props);
             const newSection: Section = {
@@ -52,12 +57,15 @@ export const useCanvasStore = create<CanvasState>()(
             );
           },
 
-          updateSection: (id, props) => {
+          updateSection: (id: string, props: Partial<SectionProps>) => {
             const sanitizedProps = sanitizeSectionProps(props);
             set(
               (state) => {
                 const section = state.sections[id];
-                if (!section) return state;
+                if (!section) {
+                  console.warn(`Section with id "${id}" not found`);
+                  return state;
+                }
 
                 return {
                   sections: {
@@ -74,9 +82,14 @@ export const useCanvasStore = create<CanvasState>()(
             );
           },
 
-          removeSection: (id) => {
+          removeSection: (id: string) => {
             set(
               (state) => {
+                if (!state.sections[id]) {
+                  console.warn(`Section with id "${id}" not found`);
+                  return state;
+                }
+
                 // eslint-disable-next-line @typescript-eslint/no-unused-vars
                 const { [id]: _removed, ...remainingSections } = state.sections;
                 const newSectionOrder = state.sectionOrder.filter(
@@ -97,9 +110,12 @@ export const useCanvasStore = create<CanvasState>()(
             );
           },
 
-          duplicateSection: (id) => {
+          duplicateSection: (id: string) => {
             const section = get().sections[id];
-            if (!section) return;
+            if (!section) {
+              console.warn(`Section with id "${id}" not found`);
+              return;
+            }
 
             const newId = generateId();
             const duplicatedSection: Section = {
@@ -127,15 +143,15 @@ export const useCanvasStore = create<CanvasState>()(
             );
           },
 
-          selectSection: (id) => {
+          selectSection: (id: string | null) => {
             set({ selectedSectionId: id }, false, "selectSection");
           },
 
-          setSectionFilter: (filter) => {
+          setSectionFilter: (filter: SectionFilter) => {
             set({ sectionFilter: filter }, false, "setSectionFilter");
           },
 
-          reorderSections: (newOrder) => {
+          reorderSections: (newOrder: string[]) => {
             set(
               (state) => {
                 const updatedSections = { ...state.sections };
@@ -171,7 +187,7 @@ export const useCanvasStore = create<CanvasState>()(
             );
           },
 
-          moveSectionUp: (id) => {
+          moveSectionUp: (id: string) => {
             const { sectionOrder } = get();
             const currentIndex = sectionOrder.indexOf(id);
             if (currentIndex <= 0) return;
@@ -185,7 +201,7 @@ export const useCanvasStore = create<CanvasState>()(
             get().reorderSections(newOrder);
           },
 
-          moveSectionDown: (id) => {
+          moveSectionDown: (id: string) => {
             const { sectionOrder } = get();
             const currentIndex = sectionOrder.indexOf(id);
             if (currentIndex >= sectionOrder.length - 1) return;
@@ -211,13 +227,25 @@ export const useCanvasStore = create<CanvasState>()(
             );
           },
 
-          importSections: (sectionsArray) => {
+          importSections: (sectionsArray: Section[]) => {
             const sections: SectionsRecord = {};
             const sectionOrder: string[] = [];
 
             sectionsArray.forEach((section, index) => {
               try {
-                const validatedSection = validateSection(section);
+                const validationResult = validateSection(
+                  section as unknown as Record<string, unknown>
+                );
+
+                if (!validationResult.success || !validationResult.data) {
+                  console.warn(
+                    `Skipping invalid section at index ${index}:`,
+                    validationResult.error
+                  );
+                  return;
+                }
+
+                const validatedSection = validationResult.data;
                 const sanitizedProps = sanitizeSectionProps(
                   validatedSection.props
                 );
@@ -227,7 +255,7 @@ export const useCanvasStore = create<CanvasState>()(
                   ...validatedSection,
                   id,
                   order: index,
-                  props: sanitizedProps as SectionProps,
+                  props: { ...validatedSection.props, ...sanitizedProps },
                 };
                 sectionOrder.push(id);
               } catch (error) {

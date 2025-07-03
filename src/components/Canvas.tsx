@@ -1,4 +1,3 @@
-import { Plus } from "lucide-react";
 import {
   useCanvasSelectors,
   useCanvasActions,
@@ -33,9 +32,6 @@ export function Canvas() {
     return (
       <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
         <div className="text-center max-w-md w-full">
-          <div className="w-12 h-12 sm:w-16 sm:h-16 mx-auto mb-4 bg-gray-100 rounded-full flex items-center justify-center border-2 border-gray-200">
-            <Plus size={20} className="text-gray-600 sm:w-6 sm:h-6" />
-          </div>
           <h3 className="text-lg font-medium text-gray-900 mb-2">
             Start building your website
           </h3>

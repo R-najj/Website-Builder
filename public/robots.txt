@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+# Sitemap
+Sitemap: https://website-builder-riad-alnajjars-projects.vercel.app/
+
+# Crawl delay (optional, adjust as needed)
+Crawl-delay: 1 

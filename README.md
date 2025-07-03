@@ -65,20 +65,6 @@ Each hook subscribes only to exactly what it needs, cutting down on re-renders. 
 
 ## 2. Performance Optimizations
 
-### Dynamic Imports
-
-I split client-only UI, like the side panels, into their own dynamically-loaded components. This defers loading heavy UI components, improving the initial bundle size and First Contentful Paint.
-
-```ts
-const LeftPanel = dynamic(
-  () => import("@/components/LeftPanel").then((mod) => mod.LeftPanel),
-  {
-    loading: () => <PanelContentSkeleton />, // Prevents layout shift
-    ssr: false, //  client-side only
-  }
-);
-```
-
 ### Debounced Form Updates
 
 Form fields trigger updates at most once every 300 ms:
@@ -102,14 +88,27 @@ Using Lodash's debounce with cleanup avoids spamming the store during typing.
 I wrap static children in React.memo:
 
 ```ts
-const RightPanelContent = React.memo(
-  ({ onClose, selectedSection, control, removeSection, duplicateSection }) => {
+const SectionForm = React.memo(
+  ({ selectedSection, control, removeSection, duplicateSection, onClose }) => {
     /* … */
   }
 );
 ```
 
 A shallow compare skips re-renders when props don't change.
+
+### Package Import Optimization
+
+Next.js automatically optimizes imports for libraries like Lucide React:
+
+```ts
+// next.config.ts
+experimental: {
+  optimizePackageImports: ["lucide-react"],
+}
+```
+
+This tree-shakes unused icons and improves bundle size.
 
 ## 3. Drag & Drop & Optimistic UI
 
@@ -158,22 +157,22 @@ const fieldsForType = (type: string) =>
 
 This keeps forms both dynamic and type-safe.
 
-### Compound & Renderer Patterns
+### Section Renderer Pattern
 
-I split the canvas into Canvas, LeftPanel, RightPanel. Each section type loads via dynamic import:
+Each section type renders via a dedicated component:
 
 ```ts
-const components = {
-  hero: dynamic(() => import("./HeroSection").then((mod) => mod.HeroSection)),
-  footer: dynamic(() =>
-    import("./FooterSection").then((mod) => mod.FooterSection)
-  ),
-  cta: dynamic(() => import("./CTASection").then((mod) => mod.CTASection)),
-};
-
 const SectionRenderer = ({ section }) => {
-  const Component = components[section.type];
-  return Component ? <Component section={section.props} /> : null;
+  switch (section.type) {
+    case "hero":
+      return <HeroSection {...section.props} />;
+    case "footer":
+      return <FooterSection {...section.props} />;
+    case "cta":
+      return <CTASection {...section.props} />;
+    default:
+      return null;
+  }
 };
 ```
 
@@ -194,40 +193,61 @@ temporal(store, {
 
 With `strict: true` and discriminated unions for sections (hero | footer | cta), I catch errors at compile time and ensure exhaustive handling.
 
-## 5. Security & Persistence
+## 5. Security & Validation
 
-### JSON Export / Import Validation
+### ValidationResult Pattern
+
+All validation functions return a consistent `ValidationResult<T>` type instead of throwing errors:
+
+```ts
+interface ValidationResult<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+}
+
+export function validateImportData(
+  data: Record<string, unknown>
+): ValidationResult<ImportData> {
+  try {
+    const validatedData = importDataSchema.parse(data);
+    return { success: true, data: validatedData };
+  } catch (error) {
+    return { success: false, error: "Import validation failed" };
+  }
+}
+```
+
+This pattern provides type-safe error handling without exceptions.
+
+### JSON Import Validation
 
 The builder lets users export and re-import their canvas as JSON. To prevent malicious payloads:
 
 ```ts
-const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
   const file = event.target.files?.[0];
   if (!file) return;
 
-  // 1. File-type & size checks
-  if (!validateFileType(file) || !validateFileSize(file)) {
-    alert("Invalid file – must be ≤10 MB .json");
-    return;
+  // 1. File-type & size validation
+  const fileTypeResult = validateFileType(file);
+  const fileSizeResult = validateFileSize(file);
+
+  if (!fileTypeResult.success || !fileSizeResult.success) {
+    throw new Error("Invalid file");
   }
 
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const json = e.target?.result as string;
+  // 2. Safe JSON parsing with prototype pollution protection
+  const parseResult = safeParseJSON(fileContent);
+  if (!parseResult.success) {
+    throw new Error("Invalid JSON format or malicious content detected");
+  }
 
-    // 2. Prototype-pollution & JSON sanity check
-    if (!isValidJSON(json)) {
-      alert("Malformed JSON");
-      return;
-    }
-
-    // 3. Zod schema validation
-    const data = validateImportData(JSON.parse(json));
-
-    // 4. Import sanitized sections
-    importSections(data.sectionOrder.map((id) => data.sections[id]));
-  };
-  reader.readAsText(file);
+  // 3. Zod schema validation
+  const validationResult = validateImportData(parseResult.data);
+  if (!validationResult.success) {
+    throw new Error("Invalid import data format");
+  }
 };
 ```
 
@@ -239,13 +259,23 @@ All user-supplied text is run through **DOMPurify** in `src/lib/security.ts`:
 export const sanitizeText = (input: string) => {
   return DOMPurify.sanitize(input, { ALLOWED_TAGS: [] });
 };
+
+export const sanitizeSectionProps = (props: Partial<SectionProps>) => {
+  const sanitized = { ...props };
+
+  if (sanitized.title !== undefined) {
+    sanitized.title = sanitizeText(sanitized.title);
+  }
+  if (sanitized.backgroundColor !== undefined) {
+    sanitized.backgroundColor = sanitizeColor(sanitized.backgroundColor);
+  }
+  // ... sanitize all fields
+
+  return sanitized;
+};
 ```
 
-The store sanitizes every update/addition:
-
-```ts
-const sanitizedProps = sanitizeSectionProps(props);
-```
+The store sanitizes every update/addition automatically.
 
 ### Strong Runtime Types with Zod
 
@@ -267,13 +297,158 @@ Invalid objects are rejected before they reach the store.
 
 These measures dramatically reduce the XSS attack surface while keeping the builder fully client-side.
 
-## 6. UI/UX & Dev Experience
+## 6. SEO & Production Optimizations
 
-- **Layout-Stable Loading Skeletons**: The initial app load is managed by a `BuilderSkeleton` component that mimics the final UI layout. Dynamic components like the side panels also use dedicated skeleton loaders. This prevents content layout shift (CLS) for a smoother, flicker-free loading experience.
-- Auto-Scroll: New sections slide into view with `scrollIntoView({ behavior: 'smooth', block: 'center' })`
-- Responsive Panels: Overlays on mobile, sidebars on desktop via Tailwind's responsive utilities
-- Tree-Shaking & Icon Imports: ES modules and named imports (e.g., `import { X, Trash2, Copy } from 'lucide-react'`) keep bundles tight
-- HMR with Turbopack: I run `next dev --turbopack` for near-instant reloads
+### Comprehensive SEO Implementation
+
+The app includes enterprise-level SEO features:
+
+```ts
+// Dynamic metadata with fallbacks
+export const metadata: Metadata = {
+  title: "Website Builder - Create Beautiful Websites with Drag & Drop",
+  description:
+    "Build stunning websites with our intuitive drag-and-drop website builder...",
+  openGraph: {
+    title: "Website Builder - Create Beautiful Websites with Drag & Drop",
+    description:
+      "Build stunning websites with our intuitive drag-and-drop website builder...",
+    type: "website",
+  },
+  // ... Twitter Cards, canonical URLs, etc.
+};
+```
+
+### Structured Data & Rich Snippets
+
+JSON-LD schema markup for better search engine understanding:
+
+```json
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "Website Builder",
+  "description": "Build stunning websites with our intuitive drag-and-drop website builder...",
+  "applicationCategory": "DeveloperApplication",
+  "featureList": [
+    "Drag and drop interface",
+    "Responsive design",
+    "Export functionality"
+  ]
+}
+```
+
+### Technical SEO Files
+
+- **`robots.txt`** – Search engine crawling guidelines
+- **`sitemap.xml`** – Dynamic XML sitemap generation
+- **`manifest.json`** – PWA capabilities and app metadata
+
+### Performance Optimizations
+
+Next.js configuration for production:
+
+```ts
+// next.config.ts
+const nextConfig = {
+  compress: true,
+  images: {
+    formats: ["image/webp", "image/avif"],
+    deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
+  },
+  experimental: {
+    optimizePackageImports: ["lucide-react"],
+  },
+  // Static asset caching
+  async headers() {
+    return [
+      {
+        source:
+          "/(.*)\\.(js|css|png|jpg|jpeg|gif|ico|svg|webp|avif|woff|woff2|ttf|eot)",
+        headers: [
+          {
+            key: "Cache-Control",
+            value: "public, max-age=31536000, immutable",
+          },
+        ],
+      },
+    ];
+  },
+};
+```
+
+## 7. UI/UX & Dev Experience
+
+### Responsive Design Strategy
+
+- **Mobile-First**: Panels become full-screen overlays on mobile
+- **Progressive Enhancement**: Desktop users get persistent sidebars
+- **Adaptive UI**: Import/Export buttons show contextual text based on screen size
+
+### Auto-Scroll & Smooth Interactions
+
+New sections slide into view with `scrollIntoView({ behavior: 'smooth', block: 'center' })` for better UX.
+
+### Loading States & Error Handling
+
+- **Import Loading**: Full-screen loading indicator during file processing
+- **Export Animation**: Visual feedback during export generation
+- **Comprehensive Error Messages**: User-friendly error handling with detailed feedback
+
+### Tree-Shaking & Icon Imports
+
+ES modules and named imports (e.g., `import { X, Trash2, Copy } from 'lucide-react'`) keep bundles tight.
+
+### HMR with Turbopack
+
+I run `next dev --turbopack` for near-instant reloads during development.
+
+## 8. Type Safety & Developer Experience
+
+### Comprehensive TypeScript Integration
+
+- **Strict Type Checking**: `strict: true` with discriminated unions
+- **Custom Type Guards**: Runtime type validation with compile-time safety
+- **ValidationResult Pattern**: Consistent error handling across the app
+
+### Template Literal Types
+
+Strong typing for colors and alignment values:
+
+```ts
+type ColorValue =
+  | `#${string}`
+  | "black"
+  | "white"
+  | "red"
+  | "green"
+  | "blue"
+  | "yellow"
+  | "orange"
+  | "purple"
+  | "pink"
+  | "brown"
+  | "gray"
+  | "grey"
+  | "transparent";
+
+type AlignmentValue = "left" | "center" | "right";
+```
+
+### Generic Store Actions
+
+Type-safe section creation with generics:
+
+```ts
+addSection: <T extends SectionType>(
+  type: T,
+  props: SectionPropsMap[T] = {} as SectionPropsMap[T]
+) => {
+  // Implementation ensures type safety across section types
+};
+```
+
+This architecture provides a robust, scalable foundation for a production-ready website builder with enterprise-level security, performance, and maintainability.
 
 ```
 
