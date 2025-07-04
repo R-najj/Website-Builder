@@ -1,7 +1,7 @@
-````
+```
 ## Getting Started
 pnpm install
-````
+```
 
 ```bash
 pnpm dev
@@ -441,10 +441,4 @@ addSection: <T extends SectionType>(
 ) => {
   // Implementation ensures type safety across section types
 };
-```
-
-This architecture provides a robust, scalable foundation for a production-ready website builder with enterprise-level security, performance, and maintainability.
-
-```
-
 ```
